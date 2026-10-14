@@ -18,5 +18,9 @@
     "license": "ISC",
     "devDependencies": {
         "browser-sync": "^3.0.4"
+    },
+    "dependencies": {
+        "better-sqlite3": "^12.11.1",
+        "csv-parse": "^7.0.3"
     }
 }
