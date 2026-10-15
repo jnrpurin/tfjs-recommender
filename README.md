@@ -16,7 +16,12 @@ A web application that displays user profiles and product listings, with the abi
 - `src/service/` - Business logic for data handling
 - `src/events/` - Event names and the event bus shared between UI and worker
 - `src/workers/modelTrainingWorker.js` - Web Worker that encodes data and trains the TensorFlow.js model
-- `data/` - JSON files with user and product data
+- `server/server.js` - Express server: serves the front-end files and the `/api/products` and `/api/users` routes
+- `server/repository.js` - All SQL queries over the SQLite database
+- `data/scripts/` - `schema.sql` and `seed.js`, which load the Kaggle CSV into SQLite
+- `data/raw/` - Kaggle CSV (not versioned)
+- `data/db/` - Generated SQLite database (not versioned)
+- `data/*.json` - Original course sample data (no longer used, kept for reference)
 
 ## Setup and Run
 
@@ -25,12 +30,17 @@ A web application that displays user profiles and product listings, with the abi
 npm install
 ```
 
-2. Start the application:
+2. Download `online_retail_II.csv` from [Kaggle](https://www.kaggle.com/datasets/mashlyn/online-retail-ii-uci) into `data/raw/` and create the database:
+```
+npm run seed
+```
+
+3. Start the application:
 ```
 npm start
 ```
 
-3. Open your browser and navigate to `http://localhost:3000`
+4. Open your browser and navigate to `http://localhost:3000`
 
 ## Features
 

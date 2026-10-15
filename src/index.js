@@ -23,14 +23,13 @@ const tfVisorView = new TFVisorView();
 const mlWorker = new Worker('/src/workers/modelTrainingWorker.js', { type: 'module' });
 
 // Set up worker message handler
-const w = WorkerController.init({
+WorkerController.init({
     worker: mlWorker,
     events: Events
 });
 
-const users = await userService.getDefaultUsers();
-w.triggerTrain(users);
-
+// training is no longer triggered on page load: with the real dataset it is heavy,
+// so it runs only when the user clicks "Train Model"
 
 ModelController.init({
     modelView,
@@ -62,6 +61,9 @@ const userController = UserController.init({
 userController.renderUsers({
     "id": 99,
     "name": "Josézin da Silva",
-    "age": 30,
-    "purchases": []
+    "country": "Brazil",
+    "orderCount": 0,
+    "avgTicket": 0,
+    "purchases": [],
+    "testPurchases": []
 });

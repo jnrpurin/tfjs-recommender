@@ -6,6 +6,7 @@ export class ModelView extends View {
     #purchasesDiv = document.querySelector('#purchasesDiv');
     #allUsersPurchasesList = document.querySelector('#allUsersPurchasesList');
     #runRecommendationBtn = document.querySelector('#runRecommendationBtn');
+    #evaluationResult = document.querySelector('#evaluationResult');
     #onTrainModel;
     #onRunRecommendation;
 
@@ -59,6 +60,17 @@ export class ModelView extends View {
         }
     }
 
+    renderEvaluation({ k, stores, model, baseline }) {
+        const percent = value => `${(value * 100).toFixed(1)}%`;
+        const winner = model > baseline ? 'text-success' : 'text-danger';
+
+        this.#evaluationResult.innerHTML = `
+            <strong>Precision@${k}</strong> on ${stores} stores (items first bought after the cutoff date)<br>
+            Model: <strong class="${winner}">${percent(model)}</strong>
+            | Most popular baseline: <strong>${percent(baseline)}</strong>
+        `;
+    }
+
     renderAllUsersPurchases(users) {
         const html = users.map(user => {
             const purchasesHtml = user.purchases.map(purchase => {
@@ -67,7 +79,7 @@ export class ModelView extends View {
 
             return `
                 <div class="user-purchase-summary">
-                    <h6>${user.name} (Age: ${user.age})</h6>
+                    <h6>${user.name} (${user.country})</h6>
                     <div class="purchases-badges">
                         ${purchasesHtml || '<span class="text-muted">No purchases</span>'}
                     </div>
