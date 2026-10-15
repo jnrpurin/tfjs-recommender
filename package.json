@@ -6,7 +6,8 @@
     "type": "module",
     "scripts": {
         "start": "browser-sync -w . --server --files \"index.html,style.css,data/*.json,src/**/*\" --port 3000",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "seed": "node data/scripts/seed.js",
+        "test":"echo \"Error: no test specified\" && exit 1"
     },
     "keywords": [
         "ecommerce",
