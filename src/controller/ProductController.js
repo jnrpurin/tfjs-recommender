@@ -1,3 +1,6 @@
+const MAX_PRODUCTS = 40;
+const MAX_RECOMMENDATIONS = 20;
+
 export class ProductController {
     #productView;
     #currentUser = null;
@@ -21,8 +24,10 @@ export class ProductController {
     async init() {
         this.setupCallbacks();
         this.setupEventListeners();
+        // the catalog has thousands of items: show only the most popular ones
         const products = await this.#productService.getProducts();
-        this.#productView.render(products, true);
+        const mostPopular = products.toSorted((a, b) => b.popularity - a.popularity).slice(0, MAX_PRODUCTS);
+        this.#productView.render(mostPopular, true);
     }
 
     setupEventListeners() {
@@ -34,7 +39,7 @@ export class ProductController {
         })
 
         this.#events.onRecommendationsReady(({ recommendations }) => {
-            this.#productView.render(recommendations, false);
+            this.#productView.render(recommendations.slice(0, MAX_RECOMMENDATIONS), false);
         });
     }
 

@@ -285,7 +285,7 @@ async function configureNeuralNetAndTrain(trainData) {
 async function trainModel({ users }) {
     console.log('Training model with users:', users);
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 1 } });
-    const products = await (await fetch('/data/products.json')).json()
+    const products = await (await fetch('/api/products')).json()
 
     const context = makeContext(products, users)
     context.productVectors = products.map(product => {

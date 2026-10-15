@@ -2,7 +2,7 @@ import { View } from './View.js';
 
 export class UserView extends View {
     #userSelect = document.querySelector('#userSelect');
-    #userAge = document.querySelector('#userAge');
+    #userCountry = document.querySelector('#userCountry');
     #pastPurchasesList = document.querySelector('#pastPurchasesList');
 
     #purchaseTemplate;
@@ -37,7 +37,7 @@ export class UserView extends View {
     }
 
     renderUserDetails(user) {
-        this.#userAge.value = user.age;
+        this.#userCountry.value = user.country;
     }
 
     renderPastPurchases(pastPurchases) {
@@ -91,7 +91,7 @@ export class UserView extends View {
                     this.#onUserSelect(userId);
                 }
             } else {
-                this.#userAge.value = '';
+                this.#userCountry.value = '';
                 this.#pastPurchasesList.innerHTML = '';
             }
         });

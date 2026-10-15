@@ -7,11 +7,12 @@ export class ProductView extends View {
     #buttons;
     // Templates and callbacks
     #productTemplate;
+    #templateReady;
     #onBuyProduct;
 
     constructor() {
         super();
-        this.init();
+        this.#templateReady = this.init();
     }
 
     async init() {
@@ -27,15 +28,16 @@ export class ProductView extends View {
         this.#onBuyProduct = callback;
     }
 
-    render(products, disableButtons = true) {
-        if (!this.#productTemplate) return;
+    async render(products, disableButtons = true) {
+        // products may arrive before the card template finishes loading
+        await this.#templateReady;
         const html = products.map(product => {
             return this.replaceTemplate(this.#productTemplate, {
                 id: product.id,
                 name: product.name,
                 category: product.category,
                 price: product.price,
-                color: product.color,
+                popularity: product.popularity,
                 product: JSON.stringify(product)
             });
         }).join('');

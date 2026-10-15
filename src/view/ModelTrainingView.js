@@ -67,7 +67,7 @@ export class ModelView extends View {
 
             return `
                 <div class="user-purchase-summary">
-                    <h6>${user.name} (Age: ${user.age})</h6>
+                    <h6>${user.name} (${user.country})</h6>
                     <div class="purchases-badges">
                         ${purchasesHtml || '<span class="text-muted">No purchases</span>'}
                     </div>
