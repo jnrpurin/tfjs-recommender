@@ -6,6 +6,7 @@ export class ModelView extends View {
     #purchasesDiv = document.querySelector('#purchasesDiv');
     #allUsersPurchasesList = document.querySelector('#allUsersPurchasesList');
     #runRecommendationBtn = document.querySelector('#runRecommendationBtn');
+    #evaluationResult = document.querySelector('#evaluationResult');
     #onTrainModel;
     #onRunRecommendation;
 
@@ -57,6 +58,17 @@ export class ModelView extends View {
             this.#trainModelBtn.disabled = false;
             this.#trainModelBtn.innerHTML = '<i class="bi bi-cpu"></i> Train Model';
         }
+    }
+
+    renderEvaluation({ k, stores, model, baseline }) {
+        const percent = value => `${(value * 100).toFixed(1)}%`;
+        const winner = model > baseline ? 'text-success' : 'text-danger';
+
+        this.#evaluationResult.innerHTML = `
+            <strong>Precision@${k}</strong> on ${stores} stores (items first bought after the cutoff date)<br>
+            Model: <strong class="${winner}">${percent(model)}</strong>
+            | Most popular baseline: <strong>${percent(baseline)}</strong>
+        `;
     }
 
     renderAllUsersPurchases(users) {

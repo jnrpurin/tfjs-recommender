@@ -34,8 +34,9 @@ export class ModelController {
             this.#modelView.enableRecommendButton();
         });
 
-        this.#events.onTrainingComplete(() => {
+        this.#events.onTrainingComplete(({ evaluation }) => {
             this.#alreadyTrained = true;
+            this.#modelView.renderEvaluation(evaluation);
             if (!this.#currentUser) return
             this.#modelView.enableRecommendButton();
         })

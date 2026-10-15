@@ -292,25 +292,75 @@ async function trainModel({ users }) {
     context.productVectorsById = Object.fromEntries(
         products.map(product => [product.id, encodeProduct(product, context)])
     )
+    // mesma ordem de products: usada para pontuar todos os itens de uma vez
+    context.productMatrix = tf.tensor2d(products.map(product => context.productVectorsById[product.id]))
 
+    _globalCtx.productMatrix?.dispose()
     _globalCtx = context
 
     const trainData = createTrainingData(context)
     console.log(`Training examples: ${trainData.ys.shape[0]}, input size: ${trainData.inputDimention}`)
 
     _model?.dispose()
+    let start = performance.now()
     _model = await configureNeuralNetAndTrain(trainData)
+    console.log(`Training: ${((performance.now() - start) / 1000).toFixed(1)}s`)
 
     // libera a memória dos dados de treino
     trainData.xs.dispose()
     trainData.ys.dispose()
 
+    start = performance.now()
+    const evaluation = evaluate(context)
+    console.log(`Evaluation (${((performance.now() - start) / 1000).toFixed(1)}s):`, JSON.stringify(evaluation))
+
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 100 } });
-    postMessage({ type: workerEvents.trainingComplete });
+    postMessage({ type: workerEvents.trainingComplete, evaluation });
 }
-function recommend({ user }) {
-    if (!_model) return;
-    const context = _globalCtx
+
+// ====================================================================
+// 📏 Avaliação: precision@K
+// O modelo treinou só com compras ANTES da data de corte (2011-09-01).
+// Para cada loja, testPurchases são os itens que ela comprou pela
+// primeira vez DEPOIS do corte. Das K primeiras recomendações,
+// quantas a loja realmente comprou depois?
+//
+// Baseline: recomendar os mais populares que a loja ainda não comprou.
+// Se o modelo não ganhar da baseline, as features precisam melhorar.
+// ====================================================================
+const EVAL_K = 10
+
+const precisionAtK = (rankedIds, relevantIds) =>
+    rankedIds.slice(0, EVAL_K).filter(id => relevantIds.has(id)).length / EVAL_K
+
+function evaluate(context) {
+    const stores = context.users.filter(u => u.purchases.length && u.testPurchases?.length)
+    const byPopularity = context.products.toSorted((a, b) => b.popularity - a.popularity)
+
+    let model = 0
+    let baseline = 0
+    stores.forEach(user => {
+        const relevantIds = new Set(user.testPurchases)
+        const purchased = new Set(uniquePurchaseIds(user))
+
+        model += precisionAtK(rankCandidates(user, context).map(p => p.id), relevantIds)
+        baseline += precisionAtK(
+            byPopularity.filter(p => !purchased.has(p.id)).map(p => p.id),
+            relevantIds
+        )
+    })
+
+    return {
+        k: EVAL_K,
+        stores: stores.length,
+        model: stores.length ? model / stores.length : 0,
+        baseline: stores.length ? baseline / stores.length : 0,
+    }
+}
+
+// Pontua com o modelo todos os itens que a loja ainda não comprou
+// (é o que interessa para descobrir produtos novos) e ordena do maior para o menor
+function rankCandidates(user, context) {
     // 1️⃣ Converta a loja fornecida no vetor de features codificadas
     //    (média dos itens comprados, país, pedidos e ticket)
     //    Isso transforma as informações da loja no mesmo formato numérico
@@ -323,27 +373,30 @@ function recommend({ user }) {
     //  Consulta: Encontre os 200 produtos mais próximos do vetor do usuário
     //  Execute _model.predict() apenas nesses produtos
 
-    // 2️⃣ Recomende só itens que a loja ainda não comprou
-    //    (é o que interessa para descobrir produtos novos)
-    const purchased = new Set(uniquePurchaseIds(user))
-    const candidates = context.products.filter(product => !purchased.has(product.id))
-
-    // 3️⃣ Crie pares de entrada (loja + item), rode a rede em todos de uma vez
-    //    e extraia as pontuações. O tf.tidy libera os tensores ao final.
+    // 2️⃣ Crie pares de entrada (loja + item) para todos os itens de uma vez:
+    //    o vetor da loja é repetido (tile) ao lado da matriz de produtos,
+    //    que já está pronta no contexto. O tf.tidy libera os tensores ao final.
     //    Formato: [numProdutos, inputDim]
     const scores = tf.tidy(() => {
-        const inputTensor = tf.tensor2d(
-            candidates.map(product => [...userVector, ...context.productVectorsById[product.id]])
-        )
+        const userRows = tf.tensor2d([userVector]).tile([context.products.length, 1])
+        const inputTensor = tf.concat([userRows, context.productMatrix], 1)
         return _model.predict(inputTensor).dataSync()
     })
 
-    const sortedItems = candidates
+    // 3️⃣ Candidatos: só itens que a loja ainda não comprou
+    const purchased = new Set(uniquePurchaseIds(user))
+    return context.products
         .map((product, index) => ({
             ...product,
             score: scores[index] // previsão do modelo para este produto
         }))
+        .filter(product => !purchased.has(product.id))
         .sort((a, b) => b.score - a.score)
+}
+
+function recommend({ user }) {
+    if (!_model) return;
+    const sortedItems = rankCandidates(user, _globalCtx)
 
     // 4️⃣ Envie a lista ordenada de produtos recomendados
     //    para a thread principal (a UI pode exibi-los agora).
