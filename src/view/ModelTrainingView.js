@@ -60,11 +60,13 @@ export class ModelView extends View {
         }
     }
 
-    renderEvaluation({ k, stores, model, baseline }) {
+    renderEvaluation({ k, stores, model, baseline, savedAt }) {
         const percent = value => `${(value * 100).toFixed(1)}%`;
         const winner = model > baseline ? 'text-success' : 'text-danger';
+        const saved = savedAt ? `Model saved at ${new Date(savedAt).toLocaleString()}<br>` : '';
 
         this.#evaluationResult.innerHTML = `
+            ${saved}
             <strong>Precision@${k}</strong> on ${stores} stores (items first bought after the cutoff date)<br>
             Model: <strong class="${winner}">${percent(model)}</strong>
             | Most popular baseline: <strong>${percent(baseline)}</strong>

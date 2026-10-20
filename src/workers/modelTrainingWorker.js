@@ -343,14 +343,7 @@ async function trainModel({ users }) {
     const products = await (await fetch('/api/products')).json()
 
     const context = makeContext(products, users)
-    context.productVectorsById = Object.fromEntries(
-        products.map(product => [product.id, encodeProduct(product, context)])
-    )
-    // mesma ordem de products: usada para pontuar todos os itens de uma vez
-    context.productMatrix = tf.tensor2d(products.map(product => context.productVectorsById[product.id]))
-
-    _globalCtx.productMatrix?.dispose()
-    _globalCtx = context
+    useContext(context)
 
     const trainData = createTrainingData(context)
     console.log(`Training examples: ${trainData.ys.shape[0]}, input size: ${trainData.inputDimention}`)
@@ -368,9 +361,98 @@ async function trainModel({ users }) {
     const evaluation = evaluate(context)
     console.log(`Evaluation (${((performance.now() - start) / 1000).toFixed(1)}s):`, JSON.stringify(evaluation))
 
+    const savedAt = new Date().toISOString()
+    try {
+        await saveModel(context, { evaluation, savedAt })
+    } catch (error) {
+        // o modelo continua utilizável nesta sessão, só não fica salvo
+        console.error('Could not save the model:', error.message)
+    }
+
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 100 } });
-    postMessage({ type: workerEvents.trainingComplete, evaluation });
+    postMessage({ type: workerEvents.trainingComplete, evaluation, savedAt });
 }
+
+// Prepara os vetores dos produtos com o contexto (encoder) atual
+function useContext(context) {
+    context.productVectorsById = Object.fromEntries(
+        context.products.map(product => [product.id, encodeProduct(product, context)])
+    )
+    // mesma ordem de products: usada para pontuar todos os itens de uma vez
+    context.productMatrix = tf.tensor2d(context.products.map(product => context.productVectorsById[product.id]))
+
+    _globalCtx.productMatrix?.dispose()
+    _globalCtx = context
+}
+
+// ====================================================================
+// 💾 Salvar e carregar
+// - modelo (pesos da rede): arquivos model.json + weights.bin no servidor
+// - encoder: mínimos/máximos e índices usados para transformar lojas e
+//   produtos em vetores. Sem ele, uma loja seria codificada de forma
+//   diferente da usada no treino e os scores perderiam o sentido.
+// - vetores dos produtos: tabela vetorial (sqlite-vec) no banco
+// ====================================================================
+function toBase64(weightData) {
+    const bytes = new Uint8Array(
+        Array.isArray(weightData) ? tf.io.concatenateArrayBuffers(weightData) : weightData
+    )
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    }
+    return btoa(binary)
+}
+
+async function postJson(url, body) {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    if (!response.ok) throw new Error(`${url} returned ${response.status}`)
+    return response.json()
+}
+
+async function saveModel(context, metadata) {
+    // só o que é necessário para codificar lojas e produtos de novo
+    const { products, users, productVectorsById, productMatrix, ...encoder } = context
+
+    await _model.save(tf.io.withSaveHandler(async artifacts => {
+        await postJson('/api/model', {
+            modelTopology: artifacts.modelTopology,
+            weightSpecs: artifacts.weightSpecs,
+            weightData: toBase64(artifacts.weightData),
+            encoder: { ...encoder, ...metadata }
+        })
+        return { modelArtifactsInfo: { dateSaved: new Date(), modelTopologyType: 'JSON' } }
+    }))
+
+    const saved = await postJson('/api/product-vectors', products.map(product => ({
+        id: product.id,
+        vector: productVectorsById[product.id]
+    })))
+    console.log(`Model saved; ${saved.count} product vectors (${saved.dimensions} dimensions) stored in sqlite-vec`)
+}
+
+// Ao abrir a página: se existe um modelo salvo, carrega e libera as recomendações sem treinar
+async function loadSavedModel() {
+    const response = await fetch('/model/encoder.json')
+    if (!response.ok) return console.log('No saved model yet: click "Train Model"')
+
+    const encoder = await response.json()
+    const [model, products] = await Promise.all([
+        tf.loadLayersModel('/model/model.json'),
+        fetch('/api/products').then(r => r.json())
+    ])
+
+    _model = model
+    useContext({ ...encoder, products })
+    console.log(`Saved model loaded (trained at ${encoder.savedAt})`)
+
+    postMessage({ type: workerEvents.trainingComplete, evaluation: encoder.evaluation, savedAt: encoder.savedAt });
+}
+loadSavedModel().catch(error => console.error('Could not load the saved model:', error.message))
 
 // ====================================================================
 // 📏 Avaliação: precision@K
