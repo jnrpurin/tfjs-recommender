@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import * as sqliteVec from 'sqlite-vec';
 import { fileURLToPath } from 'node:url';
 
 const DB = fileURLToPath(new URL('../data/db/store.db', import.meta.url));
@@ -6,7 +7,13 @@ const DB = fileURLToPath(new URL('../data/db/store.db', import.meta.url));
 // orders before this date are history (training); later ones are used only for evaluation
 export const CUTOFF = '2011-09-01';
 
+// read-only connection for the catalog and order queries
 const db = new Database(DB, { readonly: true, fileMustExist: true });
+sqliteVec.load(db);
+
+// separate connection used only to (re)write the vector table after each training
+const writeDb = new Database(DB, { fileMustExist: true });
+sqliteVec.load(writeDb);
 
 // popularity = number of distinct stores that bought the item before the cutoff
 const productsQuery = db.prepare(`
@@ -60,6 +67,19 @@ let products;
 export function getProducts() {
     return products ??= productsQuery.all({ cutoff: CUTOFF });
 }
+
+// Vector table (sqlite-vec): one row per product, rowid = item id.
+// It is recreated on every training because the vector size depends on the
+// number of categories, and cosine distance is what the nearest-items search uses.
+export const saveProductVectors = writeDb.transaction(vectors => {
+    const dimensions = vectors[0].vector.length;
+    writeDb.exec('DROP TABLE IF EXISTS vec_products');
+    writeDb.exec(`CREATE VIRTUAL TABLE vec_products USING vec0(embedding float[${dimensions}] distance_metric=cosine)`);
+
+    const insert = writeDb.prepare('INSERT INTO vec_products (rowid, embedding) VALUES (?, ?)');
+    vectors.forEach(({ id, vector }) => insert.run(BigInt(id), new Float32Array(vector)));
+    return { count: vectors.length, dimensions };
+});
 
 export function getStores(limit) {
     return storesQuery.all({ cutoff: CUTOFF, limit }).map(store => ({

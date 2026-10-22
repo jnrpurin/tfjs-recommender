@@ -13,6 +13,8 @@ const WEIGHTS = {
     country: 0.1,
     orders: 0.2,
     ticket: 0.2,
+    // par loja × item: fração das compras da loja na categoria do item
+    affinity: 0.4,
 };
 
 // 🎯 Negative sampling: em vez de todos os pares loja × item (milhões),
@@ -20,6 +22,14 @@ const WEIGHTS = {
 // NEGATIVES_PER_POSITIVE itens sorteados que a loja não comprou (label 0)
 const MAX_POSITIVES = 50
 const NEGATIVES_PER_POSITIVE = 4
+
+// Negativos sorteados com chance proporcional a (popularidade + 1) ^ expoente.
+// 0 = sorteio uniforme: quase sempre itens obscuros, e o modelo só aprende
+// "popular vende". 0.5 (raiz quadrada) traz itens populares como negativos,
+// forçando o modelo a aprender QUAL item popular combina com QUAL loja.
+// Medido (média de 3 treinos, precision@10): junto com a afinidade, 0.5 piorou
+// o resultado (2.96% contra 4.38% com 0), então o sorteio segue uniforme.
+const NEGATIVE_POPULARITY_EXPONENT = 0
 
 // países com mais lojas viram one-hot; o resto cai em OTHER
 const TOP_COUNTRIES = 10
@@ -38,6 +48,41 @@ const logNormalize = (value, min, max) =>
 const minMax = values => ({ min: Math.min(...values), max: Math.max(...values) })
 
 const uniquePurchaseIds = user => [...new Set(user.purchases.map(p => p.id))]
+
+// Fração das compras (itens distintos) da loja em cada categoria.
+// Ex.: { KITCHEN: 0.4, CANDLE: 0.1, ... }
+function categoryShares(user) {
+    const categoryById = new Map(user.purchases.map(p => [p.id, p.category]))
+    const shares = {}
+    categoryById.forEach(category => {
+        shares[category] = (shares[category] || 0) + 1 / categoryById.size
+    })
+    return shares
+}
+
+const affinityFeature = (shares, product) => (shares[product.category] || 0) * WEIGHTS.affinity
+
+// Sorteio ponderado: soma acumulada dos pesos + busca binária
+function makeNegativeSampler(products) {
+    const cumulative = []
+    let total = 0
+    products.forEach(product => {
+        total += (product.popularity + 1) ** NEGATIVE_POPULARITY_EXPONENT
+        cumulative.push(total)
+    })
+
+    return () => {
+        const target = Math.random() * total
+        let low = 0
+        let high = cumulative.length - 1
+        while (low < high) {
+            const middle = (low + high) >> 1
+            if (cumulative[middle] < target) low = middle + 1
+            else high = middle
+        }
+        return products[low]
+    }
+}
 
 function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
@@ -142,30 +187,36 @@ function encodeUser(user, context) {
 function createTrainingData(context) {
     const inputs = []
     const labels = []
-    const productIds = context.products.map(p => p.id)
+    const sampleNegative = makeNegativeSampler(context.products)
+    const productsById = new Map(context.products.map(p => [p.id, p]))
 
     context.users
         .filter(u => u.purchases.length)
         .forEach(user => {
             const userVector = encodeUser(user, context)
+            const shares = categoryShares(user)
             const purchased = new Set(uniquePurchaseIds(user))
             const positives = shuffle([...purchased]).slice(0, MAX_POSITIVES)
 
-            const addPair = (productId, label) => {
-                // combinar user + product
-                inputs.push([...userVector, ...context.productVectorsById[productId]])
+            const addPair = (product, label) => {
+                // combinar user + product + afinidade da loja com a categoria do item
+                inputs.push([
+                    ...userVector,
+                    ...context.productVectorsById[product.id],
+                    affinityFeature(shares, product)
+                ])
                 labels.push(label)
             }
 
             positives.forEach(productId => {
-                addPair(productId, 1)
+                addPair(productsById.get(productId), 1)
 
                 for (let n = 0; n < NEGATIVES_PER_POSITIVE; n++) {
-                    let negativeId
+                    let negative
                     do {
-                        negativeId = productIds[Math.floor(Math.random() * productIds.length)]
-                    } while (purchased.has(negativeId))
-                    addPair(negativeId, 0)
+                        negative = sampleNegative()
+                    } while (purchased.has(negative.id))
+                    addPair(negative, 0)
                 }
             })
         })
@@ -173,8 +224,8 @@ function createTrainingData(context) {
     return {
         xs: tf.tensor2d(inputs),
         ys: tf.tensor2d(labels, [labels.length, 1]),
-        inputDimention: context.userDimentions + context.productDimentions
-        // tamanho = userVector + productVector
+        inputDimention: context.userDimentions + context.productDimentions + 1
+        // tamanho = userVector + productVector + afinidade
     }
 }
 
@@ -205,7 +256,10 @@ const exampleStore = {
 // Vetor da loja:
 // [média dos vetores dos itens comprados..., país_one_hot..., pedidos, ticket]
 //
-// Entrada da rede = vetor da loja + vetor do item.
+// Afinidade (do par loja × item):
+// fração das compras da loja na categoria do item (ex.: 40% KITCHEN → 0.4)
+//
+// Entrada da rede = vetor da loja + vetor do item + afinidade.
 // São esses números que vão para a rede neural.
 // ====================================================================
 
@@ -289,14 +343,7 @@ async function trainModel({ users }) {
     const products = await (await fetch('/api/products')).json()
 
     const context = makeContext(products, users)
-    context.productVectorsById = Object.fromEntries(
-        products.map(product => [product.id, encodeProduct(product, context)])
-    )
-    // mesma ordem de products: usada para pontuar todos os itens de uma vez
-    context.productMatrix = tf.tensor2d(products.map(product => context.productVectorsById[product.id]))
-
-    _globalCtx.productMatrix?.dispose()
-    _globalCtx = context
+    useContext(context)
 
     const trainData = createTrainingData(context)
     console.log(`Training examples: ${trainData.ys.shape[0]}, input size: ${trainData.inputDimention}`)
@@ -314,9 +361,98 @@ async function trainModel({ users }) {
     const evaluation = evaluate(context)
     console.log(`Evaluation (${((performance.now() - start) / 1000).toFixed(1)}s):`, JSON.stringify(evaluation))
 
+    const savedAt = new Date().toISOString()
+    try {
+        await saveModel(context, { evaluation, savedAt })
+    } catch (error) {
+        // o modelo continua utilizável nesta sessão, só não fica salvo
+        console.error('Could not save the model:', error.message)
+    }
+
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 100 } });
-    postMessage({ type: workerEvents.trainingComplete, evaluation });
+    postMessage({ type: workerEvents.trainingComplete, evaluation, savedAt });
 }
+
+// Prepara os vetores dos produtos com o contexto (encoder) atual
+function useContext(context) {
+    context.productVectorsById = Object.fromEntries(
+        context.products.map(product => [product.id, encodeProduct(product, context)])
+    )
+    // mesma ordem de products: usada para pontuar todos os itens de uma vez
+    context.productMatrix = tf.tensor2d(context.products.map(product => context.productVectorsById[product.id]))
+
+    _globalCtx.productMatrix?.dispose()
+    _globalCtx = context
+}
+
+// ====================================================================
+// 💾 Salvar e carregar
+// - modelo (pesos da rede): arquivos model.json + weights.bin no servidor
+// - encoder: mínimos/máximos e índices usados para transformar lojas e
+//   produtos em vetores. Sem ele, uma loja seria codificada de forma
+//   diferente da usada no treino e os scores perderiam o sentido.
+// - vetores dos produtos: tabela vetorial (sqlite-vec) no banco
+// ====================================================================
+function toBase64(weightData) {
+    const bytes = new Uint8Array(
+        Array.isArray(weightData) ? tf.io.concatenateArrayBuffers(weightData) : weightData
+    )
+    let binary = ''
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+    }
+    return btoa(binary)
+}
+
+async function postJson(url, body) {
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    if (!response.ok) throw new Error(`${url} returned ${response.status}`)
+    return response.json()
+}
+
+async function saveModel(context, metadata) {
+    // só o que é necessário para codificar lojas e produtos de novo
+    const { products, users, productVectorsById, productMatrix, ...encoder } = context
+
+    await _model.save(tf.io.withSaveHandler(async artifacts => {
+        await postJson('/api/model', {
+            modelTopology: artifacts.modelTopology,
+            weightSpecs: artifacts.weightSpecs,
+            weightData: toBase64(artifacts.weightData),
+            encoder: { ...encoder, ...metadata }
+        })
+        return { modelArtifactsInfo: { dateSaved: new Date(), modelTopologyType: 'JSON' } }
+    }))
+
+    const saved = await postJson('/api/product-vectors', products.map(product => ({
+        id: product.id,
+        vector: productVectorsById[product.id]
+    })))
+    console.log(`Model saved; ${saved.count} product vectors (${saved.dimensions} dimensions) stored in sqlite-vec`)
+}
+
+// Ao abrir a página: se existe um modelo salvo, carrega e libera as recomendações sem treinar
+async function loadSavedModel() {
+    const response = await fetch('/model/encoder.json')
+    if (!response.ok) return console.log('No saved model yet: click "Train Model"')
+
+    const encoder = await response.json()
+    const [model, products] = await Promise.all([
+        tf.loadLayersModel('/model/model.json'),
+        fetch('/api/products').then(r => r.json())
+    ])
+
+    _model = model
+    useContext({ ...encoder, products })
+    console.log(`Saved model loaded (trained at ${encoder.savedAt})`)
+
+    postMessage({ type: workerEvents.trainingComplete, evaluation: encoder.evaluation, savedAt: encoder.savedAt });
+}
+loadSavedModel().catch(error => console.error('Could not load the saved model:', error.message))
 
 // ====================================================================
 // 📏 Avaliação: precision@K
@@ -373,13 +509,17 @@ function rankCandidates(user, context) {
     //  Consulta: Encontre os 200 produtos mais próximos do vetor do usuário
     //  Execute _model.predict() apenas nesses produtos
 
-    // 2️⃣ Crie pares de entrada (loja + item) para todos os itens de uma vez:
+    // 2️⃣ Crie pares de entrada (loja + item + afinidade) para todos os itens de uma vez:
     //    o vetor da loja é repetido (tile) ao lado da matriz de produtos,
     //    que já está pronta no contexto. O tf.tidy libera os tensores ao final.
     //    Formato: [numProdutos, inputDim]
+    const shares = categoryShares(user)
     const scores = tf.tidy(() => {
         const userRows = tf.tensor2d([userVector]).tile([context.products.length, 1])
-        const inputTensor = tf.concat([userRows, context.productMatrix], 1)
+        const affinity = tf.tensor2d(
+            context.products.map(product => [affinityFeature(shares, product)])
+        )
+        const inputTensor = tf.concat([userRows, context.productMatrix, affinity], 1)
         return _model.predict(inputTensor).dataSync()
     })
 

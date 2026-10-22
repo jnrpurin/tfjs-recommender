@@ -141,3 +141,4 @@ vite.config.ts.timestamp-*
 # Dataset (Kaggle) and generated SQLite database
 data/raw/
 data/db/
+data/model/

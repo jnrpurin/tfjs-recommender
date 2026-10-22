@@ -34,9 +34,10 @@ export class ModelController {
             this.#modelView.enableRecommendButton();
         });
 
-        this.#events.onTrainingComplete(({ evaluation }) => {
+        // also fired on page load when the worker finds a saved model
+        this.#events.onTrainingComplete(({ evaluation, savedAt }) => {
             this.#alreadyTrained = true;
-            this.#modelView.renderEvaluation(evaluation);
+            this.#modelView.renderEvaluation({ ...evaluation, savedAt });
             if (!this.#currentUser) return
             this.#modelView.enableRecommendButton();
         })
